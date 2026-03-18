@@ -25,7 +25,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 ניתוח עומק: קריאות חוזרות")
+st.title("📊 ניתוח קריאות חוזרות")
 
 uploaded_file = st.file_uploader("העלה קובץ קריאות שירות (XLSX/CSV)", type=['csv', 'xlsx'])
 
