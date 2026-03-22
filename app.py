@@ -3,31 +3,30 @@ import pandas as pd
 import plotly.express as px
 from PIL import Image
 
-# 1. הגדרת עמוד ו-Favicon
+# 1. הגדרות עמוד
 try:
     favicon = Image.open('politex.ico')
-    st.set_page_config(page_title="ניהול קריאות חוזרות - פוליטקס", page_icon=favicon, layout="wide")
+    st.set_page_config(page_title="פוליטקס - ניתוח קריאות חוזרות", page_icon=favicon, layout="wide")
 except:
-    st.set_page_config(page_title="ניהול קריאות חוזרות", page_icon="📊", layout="wide")
+    st.set_page_config(page_title="פוליטקס - ניתוח קריאות חוזרות", layout="wide")
 
-# 2. הצגת לוגו
+# 2. לוגו
 try:
     logo = Image.open('logo.png')
     st.image(logo, width=180)
 except:
     pass
 
-# עיצוב לעברית
 st.markdown("""
     <style>
     body, .main, .stText { direction: rtl; text-align: right; }
-    .stMetric { direction: ltr !important; }
+    .stMetric { direction: ltr !important; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 ניתוח קריאות חוזרות")
+st.title("📊 מחשב קריאות חוזרות לפי טכנאי אחראי")
 
-uploaded_file = st.file_uploader("העלה קובץ קריאות שירות (XLSX/CSV)", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("העלה קובץ שירות (XLSX/CSV)", type=['csv', 'xlsx'])
 
 if uploaded_file:
     try:
@@ -37,70 +36,77 @@ if uploaded_file:
         else:
             df = pd.read_excel(uploaded_file, engine='calamine')
 
-        # הגדרת עמודות
+        # עמודות חובה
         id_col = "מס. קריאה"
         device_col = "מס' מכשיר"
         date_col = "ת. פתיחה"
         tech_col = "לטיפול"
 
-        if all(col in df.columns for col in [id_col, device_col, date_col]):
-            # עיבוד ראשוני
+        if all(col in df.columns for col in [id_col, device_col, date_col, tech_col]):
+            # עיבוד תאריכים ומיון
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce', dayfirst=True)
-            df = df.dropna(subset=[device_col, date_col]).sort_values([device_col, date_col])
+            df = df.dropna(subset=[device_col, date_col, tech_col]).sort_values([device_col, date_col])
 
-            # חישוב קריאה חוזרת + זיהוי קריאת המקור
-            df['קריאה קודמת'] = df.groupby(device_col)[id_col].shift(1)
-            df['תאריך קודם'] = df.groupby(device_col)[date_col].shift(1)
-            df['ימים מהקריאה הקודמת'] = (df[date_col] - df['תאריך קודם']).dt.total_seconds() / (24 * 3600)
-            df['האם חוזרת'] = (df['ימים מהקריאה הקודמת'] <= 30).astype(int)
+            # --- לוגיקה מתוקנת ---
+            # לכל שורה, אנחנו מושכים את הפרטים של הקריאה *הבאה* באותו מכשיר
+            df['קריאה_הבאה_תאריך'] = df.groupby(device_col)[date_col].shift(-1)
+            df['קריאה_הבאה_מספר'] = df.groupby(device_col)[id_col].shift(-1)
+            df['קריאה_הבאה_טכנאי'] = df.groupby(device_col)[tech_col].shift(-1)
+            
+            # חישוב הפרש ימים לקריאה הבאה
+            df['ימים_עד_לקריאה_הבאה'] = (df['קריאה_הבאה_תאריך'] - df[date_col]).dt.total_seconds() / (24 * 3600)
+            
+            # קריאה נחשבת "נכשלת" (מייצרת חוזרת) אם הקריאה הבאה הגיעה תוך 30 יום
+            # האחריות נרשמת על הטכנאי של הקריאה הנוכחית!
+            df['ייצר_קריאה_חוזרת'] = ((df['ימים_עד_לקריאה_הבאה'] <= 30) & (df['ימים_עד_לקריאה_הבאה'] >= 0)).astype(int)
 
+            # סטטיסטיקה לפי טכנאי
+            # סה"כ קריאות שהטכנאי ביצע לעומת כמה מהן "חזרו" תוך 30 יום
+            tech_stats = df.groupby(tech_col).agg({
+                id_col: 'count',
+                'ייצר_קריאה_חוזרת': 'sum'
+            }).reset_index()
+            tech_stats.columns = ['טכנאי', 'סה"כ קריאות שביצע', 'קריאות שחזרו (תוך 30 יום)']
+            tech_stats['אחוז קריאות חוזרות'] = (tech_stats['קריאות שחזרו (תוך 30 יום)'] / tech_stats['סה"כ קריאות שביצע']) * 100
+            
             # מדדים כלליים
-            total_calls = len(df)
-            repeat_calls = df['האם חוזרת'].sum()
+            total_system_calls = len(df)
+            total_repeats = df['ייצר_קריאה_חוזרת'].sum()
             
             st.divider()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("סה\"כ קריאות", total_calls)
-            m2.metric("קריאות חוזרות", repeat_calls)
-            m3.metric("אחוז חוזרות כללי", f"{(repeat_calls/total_calls)*100:.1f}%")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("סה\"כ קריאות במערכת", f"{total_system_calls}")
+            c2.metric("סה\"כ קריאות חוזרות", f"{total_repeats}")
+            c3.metric("אחוז חוזרות מחלקתי", f"{(total_repeats/total_system_calls)*100:.1f}%")
 
-            # --- חלק א: ניתוח טכנאים ---
-            st.header("👤 ניתוח לפי טכנאי")
-            tech_stats = df.groupby(tech_col)['האם חוזרת'].agg(['count', 'sum']).reset_index()
-            tech_stats.columns = ['טכנאי', 'סה"כ קריאות', 'חוזרות']
-            tech_stats['אחוז חוזרות'] = (tech_stats['חוזרות'] / tech_stats['סה"כ קריאות']) * 100
-            
-            fig = px.bar(tech_stats.sort_values('אחוז חוזרות', ascending=False), 
-                         x='טכנאי', y='אחוז חוזרות', text_auto='.1f', color='אחוז חוזרות',
-                         color_continuous_scale='Reds')
+            # גרף
+            st.subheader("📈 דירוג טכנאים לפי אחוז קריאות חוזרות")
+            st.caption("האחוז מחושב מתוך סך הקריאות שהטכנאי ביצע, אשר גררו קריאה נוספת תוך 30 יום.")
+            fig = px.bar(tech_stats.sort_values('אחוז קריאות חוזרות', ascending=False), 
+                         x='טכנאי', y='אחוז קריאות חוזרות', text_auto='.1f',
+                         color='אחוז קריאות חוזרות', color_continuous_scale='Reds')
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- חלק ב: פירוט שרשראות קריאות ---
-            st.header("🔍 פירוט קריאות חוזרות (שרשראות)")
+            # פירוט פר טכנאי
+            st.subheader("🔍 חקירת שרשרת קריאות לפי טכנאי")
+            target_tech = st.selectbox("בחר טכנאי כדי לראות אילו קריאות שלו חזרו:", ["בחר טכנאי"] + list(tech_stats['טכנאי'].unique()))
             
-            selected_tech = st.selectbox("בחר טכנאי לצפייה בקריאות החוזרות שלו:", ["כל הטכנאים"] + list(tech_stats['טכנאי'].unique()))
-            
-            # סינון הנתונים להצגת החוזרות בלבד
-            view_df = df[df['האם חוזרת'] == 1].copy()
-            
-            if selected_tech != "כל הטכנאים":
-                view_df = view_df[view_df[tech_col] == selected_tech]
+            if target_tech != "בחר טכנאי":
+                # מציגים את הקריאות שהטכנאי עשה, ומה הייתה הקריאה שחזרה אחריו
+                tech_calls_view = df[(df[tech_col] == target_tech) & (df['ייצר_קריאה_חוזרת'] == 1)].copy()
+                
+                display_df = tech_calls_view[[id_col, date_col, device_col, 'קריאה_הבאה_מספר', 'קריאה_הבאה_תאריך', 'ימים_עד_לקריאה_הבאה', 'קריאה_הבאה_טכנאי']]
+                display_df.columns = ['קריאת מקור (שלך)', 'תאריך מקור', 'מספר מכשיר', 'קריאה חוזרת שנוצרה', 'תאריך חוזרת', 'ימים שעברו', 'טכנאי שביצע חוזרת']
+                
+                st.write(f"נמצאו {len(display_df)} קריאות שבוצעו על ידי {target_tech} וחזרו בתוך 30 יום:")
+                st.dataframe(display_df.style.format({'ימים שעברו': '{:.1f}'}), use_container_width=True)
 
-            # עיצוב הטבלה להצגה
-            display_cols = [id_col, 'קריאה קודמת', device_col, date_col, 'תאריך קודם', 'ימים מהקריאה הקודמת', tech_col]
-            
-            if not view_df.empty:
-                st.write(f"נמצאו {len(view_df)} מקרי קריאות חוזרות עבור הבחירה:")
-                st.dataframe(view_df[display_cols].style.format({'ימים מהקריאה הקודמת': '{:.1f}'}), use_container_width=True)
-            else:
-                st.success("לא נמצאו קריאות חוזרות עבור טכנאי זה.")
-
-            # הורדת קובץ מלא
+            # הורדה
             st.divider()
             csv = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("📥 הורד קובץ מעובד מלא (כולל שיוך קריאות)", csv, "full_analysis.csv", "text/csv")
+            st.download_button("📥 הורד קובץ ניתוח מלא", csv, "politex_repeat_calls_final.csv", "text/csv")
 
         else:
-            st.error("הקובץ חסר עמודות קריטיות (מס. קריאה, מס' מכשיר או ת. פתיחה)")
+            st.error("חסרות עמודות קריטיות בקובץ. וודא שקיימות: מס. קריאה, מס' מכשיר, ת. פתיחה, לטיפול.")
     except Exception as e:
-        st.error(f"שגיאה בעיבוד: {e}")
+        st.error(f"שגיאה בעיבוד הקובץ: {e}")
